@@ -45,6 +45,16 @@ def _gender_from_url(url: str) -> str:
     return "unisex"
 
 
+async def _interruptible_sleep(seconds: float):
+    """Sleep in small chunks so SIGTERM is handled promptly."""
+    end = asyncio.get_event_loop().time() + seconds
+    while not _shutdown:
+        remaining = end - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(5.0, remaining))
+
+
 async def run_once():
     log.info("Запуск перевірки...")
     browser = None
@@ -60,6 +70,7 @@ async def run_once():
         try:
             total_new = 0
             total_restock = 0
+            total_skipped = 0
 
             for url in MONITOR_URLS:
                 if _shutdown:
@@ -77,21 +88,18 @@ async def run_once():
 
                     pid = product.get("id")
                     if not pid:
+                        log.debug("Пропускаю товар без ID")
                         continue
 
                     product["gender"] = gender
 
                     if not matches(product):
-                        # Still need to track sizes for restock detection
-                        # even for products that don't match current filters,
-                        # so we can detect when they come back in stock at a good price.
-                        # But we skip enriching to save time — only enrich if it matches.
+                        total_skipped += 1
                         seen = get_seen(pid)
                         if seen is None:
                             upsert_seen(pid, [], gender)
                         continue
 
-                    # Product matches filters — enrich with sizes
                     try:
                         enriched = await enrich_with_sizes(page, product)
                     except Exception as e:
@@ -102,31 +110,35 @@ async def run_once():
                     seen = get_seen(pid)
 
                     if seen is None:
-                        # Brand new product
-                        upsert_seen(pid, current_sizes, gender)
-                        total_new += 1
                         enriched["notify_type"] = "new"
                         try:
                             await send_product(enriched)
+                            total_new += 1
+                            log.info(f"🆕 {enriched.get('brand')} — {enriched.get('name')} ({gender})")
                         except Exception as e:
-                            log.error(f"Помилка при відправці нового товару {pid}: {e}")
+                            log.error(f"Помилка відправки нового товару {pid}: {e}")
+                        # Mark seen regardless — better to miss a send than loop forever
+                        upsert_seen(pid, current_sizes, gender)
                     else:
-                        # Already seen — check for new sizes
                         stored_sizes = set(seen.get("sizes", []))
                         new_sizes = [s for s in current_sizes if s not in stored_sizes]
-
                         upsert_seen(pid, current_sizes, gender)
 
                         if new_sizes:
-                            total_restock += 1
                             enriched["notify_type"] = "restock"
                             enriched["new_sizes"] = new_sizes
                             try:
                                 await send_product(enriched)
+                                total_restock += 1
+                                log.info(f"🔄 {enriched.get('brand')} — нові розміри: {new_sizes} ({gender})")
                             except Exception as e:
-                                log.error(f"Помилка при відправці рестоку {pid}: {e}")
+                                log.error(f"Помилка відправки рестоку {pid}: {e}")
 
-            log.info(f"Нових: {total_new}, рестоків: {total_restock}")
+            log.info(
+                f"Перевірку завершено. "
+                f"Нових: {total_new}, рестоків: {total_restock}, "
+                f"відфільтровано: {total_skipped}"
+            )
 
         except Exception as e:
             log.error(f"Помилка в циклі перевірки:\n{traceback.format_exc()}")
@@ -136,8 +148,6 @@ async def run_once():
                 await browser.close()
             except Exception:
                 pass
-
-    log.info("Перевірку завершено.")
 
 
 async def loop():
@@ -162,7 +172,7 @@ async def loop():
 
         delay = random.uniform(INTERVAL_MIN, INTERVAL_MAX)
         log.info(f"Наступна перевірка через {delay:.1f} хв...")
-        await asyncio.sleep(int(delay * 60))
+        await _interruptible_sleep(delay * 60)
 
     log.info("Моніторинг зупинено.")
     await send_alert("🛑 BestSecret Monitor зупинено.")

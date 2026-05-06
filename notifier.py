@@ -10,11 +10,8 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 log = get_logger("notifier")
 
-# Women/unisex bot
 _TOKEN_WOMEN = os.getenv("TELEGRAM_TOKEN_WOMEN") or os.getenv("TELEGRAM_TOKEN", "")
 _IDS_WOMEN   = os.getenv("TELEGRAM_CHAT_ID_WOMEN") or os.getenv("TELEGRAM_CHAT_ID", "")
-
-# Men's bot (falls back to women bot if not configured)
 _TOKEN_MEN   = os.getenv("TELEGRAM_TOKEN_MEN") or _TOKEN_WOMEN
 _IDS_MEN     = os.getenv("TELEGRAM_CHAT_ID_MEN") or _IDS_WOMEN
 
@@ -47,14 +44,17 @@ def _build_caption(product: dict) -> str:
     href        = product.get("href", "")
 
     if notify_type == "restock":
-        new_sizes = ", ".join(product.get("new_sizes", [])) or "—"
-        all_sizes = ", ".join(product.get("sizes", [])) or "—"
-        header = "🔄 <b>З'явились нові розміри!</b>"
-        sizes_line = f"Нові розміри: <b>{new_sizes}</b>\nВсі розміри: {all_sizes}"
+        new_sizes = product.get("new_sizes", [])
+        new_sizes = new_sizes if isinstance(new_sizes, list) else []
+        all_sizes = product.get("sizes", [])
+        all_sizes = all_sizes if isinstance(all_sizes, list) else []
+        header     = "🔄 <b>З'явились нові розміри!</b>"
+        sizes_line = f"Нові розміри: <b>{', '.join(new_sizes) or '—'}</b>\nВсі розміри: {', '.join(all_sizes) or '—'}"
     else:
-        all_sizes = ", ".join(product.get("sizes", [])) or "—"
-        header = "🆕 <b>Новий товар!</b>"
-        sizes_line = f"Розміри: {all_sizes}"
+        all_sizes  = product.get("sizes", [])
+        all_sizes  = all_sizes if isinstance(all_sizes, list) else []
+        header     = "🆕 <b>Новий товар!</b>"
+        sizes_line = f"Розміри: {', '.join(all_sizes) or '—'}"
 
     orig_str = f" <s>{original:.2f} €</s>" if original > 0 else ""
     return (
@@ -87,17 +87,22 @@ async def _send_to_one(
             if resp.status_code == 200:
                 sent = True
             else:
-                log.warning(f"sendPhoto [{chat_id}] помилка: {resp.text[:200]}")
+                log.warning(f"sendPhoto [{chat_id}] HTTP {resp.status_code}: {resp.text[:200]}")
         except Exception as e:
             log.warning(f"sendPhoto [{chat_id}] виняток: {e}")
 
     if not sent:
-        resp = await client.post(
-            f"{api}/sendMessage",
-            data={"chat_id": chat_id, "text": caption, "parse_mode": "HTML"},
-        )
-        if resp.status_code != 200:
-            log.error(f"sendMessage [{chat_id}] помилка: {resp.text[:200]}")
+        try:
+            resp = await client.post(
+                f"{api}/sendMessage",
+                data={"chat_id": chat_id, "text": caption, "parse_mode": "HTML"},
+            )
+            if resp.status_code == 200:
+                log.debug(f"sendMessage [{chat_id}] OK")
+            else:
+                log.error(f"sendMessage [{chat_id}] HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            log.error(f"sendMessage [{chat_id}] виняток: {e}")
 
 
 async def send_product(product: dict):
@@ -105,7 +110,7 @@ async def send_product(product: dict):
     token, chat_ids = _bot_for(gender)
 
     if not token or not chat_ids:
-        log.warning(f"Telegram не налаштований для gender={gender} — пропускаю.")
+        log.warning(f"Telegram не налаштований для gender={gender}, пропускаю товар: {product.get('brand')} {product.get('name')}")
         return
 
     caption     = _build_caption(product)
@@ -121,21 +126,25 @@ async def send_product(product: dict):
                 })
                 if img_resp.status_code == 200 and img_resp.headers.get("content-type", "").startswith("image/"):
                     image_bytes = img_resp.content
+                else:
+                    log.warning(f"Фото не завантажено: HTTP {img_resp.status_code} для {image[:60]}")
             except Exception as e:
-                log.warning(f"Не вдалось завантажити фото: {e}")
+                log.warning(f"Не вдалось завантажити фото ({product.get('brand')} {product.get('name')}): {e}")
 
         for chat_id in chat_ids:
-            await _send_to_one(client, token, chat_id, caption, image_bytes)
+            try:
+                await _send_to_one(client, token, chat_id, caption, image_bytes)
+            except Exception as e:
+                log.error(f"Критична помилка відправки у чат {chat_id}: {e}")
             await asyncio.sleep(0.5)
 
     notify_type = product.get("notify_type", "new")
-    log.info(f"[{notify_type}] {product.get('brand')} — {product.get('name')} — {product.get('price')}€ → {gender}")
+    log.info(f"[{notify_type}] {product.get('brand')} — {product.get('name')} {product.get('price')}€ → {gender}")
     await asyncio.sleep(SEND_DELAY)
 
 
 async def send_alert(text: str):
-    # Send admin alerts to all configured chats
-    tokens_ids = set()
+    tokens_ids: set[tuple[str, str]] = set()
     if _TOKEN_WOMEN and _IDS_WOMEN:
         for cid in _chat_ids(_IDS_WOMEN):
             tokens_ids.add((_TOKEN_WOMEN, cid))
@@ -144,13 +153,20 @@ async def send_alert(text: str):
             tokens_ids.add((_TOKEN_MEN, cid))
 
     if not tokens_ids:
+        log.warning("send_alert: Telegram не налаштований, алерт не надіслано")
         return
+
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             for token, chat_id in tokens_ids:
-                await client.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    data={"chat_id": chat_id, "text": text},
-                )
-    except Exception:
-        pass
+                try:
+                    resp = await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        data={"chat_id": chat_id, "text": text},
+                    )
+                    if resp.status_code != 200:
+                        log.warning(f"send_alert [{chat_id}] HTTP {resp.status_code}: {resp.text[:100]}")
+                except Exception as e:
+                    log.warning(f"send_alert [{chat_id}] виняток: {e}")
+    except Exception as e:
+        log.error(f"send_alert: критична помилка: {e}")

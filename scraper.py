@@ -9,22 +9,24 @@ async def _close_cookie_banner(page: Page):
     try:
         await page.click('.closebutton', timeout=3000)
         await asyncio.sleep(0.5)
+        log.debug("Cookie banner закритий")
     except Exception:
-        pass
+        pass  # Banner absent or already closed — not an error
 
 
 async def _scroll_to_bottom(page: Page):
     prev_height = 0
-    for _ in range(25):
+    for i in range(25):
         try:
             await page.evaluate("window.scrollBy(0, 900)")
             await asyncio.sleep(1.5)
             height = await page.evaluate("document.body.scrollHeight")
             if height == prev_height:
+                log.debug(f"Скрол завершено на ітерації {i+1}")
                 break
             prev_height = height
         except Exception as e:
-            log.warning(f"Помилка при скролі: {e}")
+            log.warning(f"Помилка при скролі на ітерації {i+1}: {e}")
             break
 
 
@@ -36,8 +38,8 @@ async def _get_sizes(page: Page, product_url: str) -> list[str]:
         try:
             await page.click('.size-selector-button', timeout=4000)
             await asyncio.sleep(1.5)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"Size selector не знайдено або не вдалось клікнути ({product_url[-40:]}): {e}")
 
         sizes = await page.evaluate("""
             () => {
@@ -50,6 +52,12 @@ async def _get_sizes(page: Page, product_url: str) -> list[str]:
                 return [...new Set(result)];
             }
         """)
+
+        if not sizes:
+            log.debug(f"Розміри не знайдені для {product_url[-40:]}")
+        else:
+            log.debug(f"Знайдено {len(sizes)} розмірів для {product_url[-40:]}")
+
         return sizes
 
     except Exception as e:
@@ -109,6 +117,7 @@ async def get_products(page: Page, url: str) -> list[dict]:
                 return items;
             }
         """)
+        log.debug(f"Розібрано {len(raw)} товарів з {url[-50:]}")
         return raw
     except Exception as e:
         log.error(f"Помилка при парсингу {url}: {e}")
@@ -116,5 +125,7 @@ async def get_products(page: Page, url: str) -> list[dict]:
 
 
 async def enrich_with_sizes(page: Page, product: dict) -> dict:
-    sizes = await _get_sizes(page, product["href"])
+    href = product.get("href", "")
+    log.debug(f"Отримую розміри для {product.get('brand')} — {product.get('name')}")
+    sizes = await _get_sizes(page, href)
     return {**product, "sizes": sizes}
