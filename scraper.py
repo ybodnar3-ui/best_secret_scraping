@@ -15,16 +15,23 @@ async def _close_cookie_banner(page: Page):
 
 
 async def _scroll_to_bottom(page: Page):
-    prev_height = 0
-    for i in range(25):
+    prev_count = 0
+    stable_rounds = 0
+    for i in range(80):
         try:
             await page.evaluate("window.scrollBy(0, 900)")
-            await asyncio.sleep(1.5)
-            height = await page.evaluate("document.body.scrollHeight")
-            if height == prev_height:
-                log.debug(f"Скрол завершено на ітерації {i+1}")
-                break
-            prev_height = height
+            await asyncio.sleep(1.2)
+            count = await page.evaluate(
+                "document.querySelectorAll('.product-tile__container').length"
+            )
+            if count == prev_count:
+                stable_rounds += 1
+                if stable_rounds >= 3:
+                    log.debug(f"Скрол завершено на ітерації {i+1}, товарів: {count}")
+                    break
+            else:
+                stable_rounds = 0
+                prev_count = count
         except Exception as e:
             log.warning(f"Помилка при скролі на ітерації {i+1}: {e}")
             break
