@@ -29,16 +29,26 @@ def _is_shoe(product: dict) -> bool:
     return any(k in text for k in SHOE_KEYWORDS)
 
 
+def _max_price_for(gender: str) -> float:
+    if gender == "men":
+        return _env_float("MAX_PRICE_MEN", 250)
+    if gender == "women":
+        return _env_float("MAX_PRICE_WOMEN", 300)
+    # unisex / unknown — use generic fallback
+    return _env_float("FILTER_MAX_PRICE", 300)
+
+
 def matches(product: dict) -> bool:
-    # If we're monitoring the luxury section, filter to shoes only
     if os.getenv("FILTER_SHOES_ONLY", "false").lower() == "true":
         if not _is_shoe(product):
             return False
 
-    brands    = _env_list("FILTER_BRANDS")
-    sizes     = _env_list("FILTER_SIZES")
-    max_price = _env_float("FILTER_MAX_PRICE", 0)
-    min_disc  = _env_float("FILTER_MIN_DISCOUNT", 0)
+    brands   = _env_list("FILTER_BRANDS")
+    sizes    = _env_list("FILTER_SIZES")
+    min_disc = _env_float("FILTER_MIN_DISCOUNT", 0)
+    gender   = product.get("gender", "")
+
+    max_price = _max_price_for(gender)
 
     if brands:
         if not any(b in product.get("brand", "").lower() for b in brands):

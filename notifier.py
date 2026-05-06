@@ -10,13 +10,25 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 log = get_logger("notifier")
 
-TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN", "")
-_raw_ids          = os.getenv("TELEGRAM_CHAT_ID", "")
-TELEGRAM_CHAT_IDS = [i.strip() for i in _raw_ids.split(",") if i.strip()]
-API_BASE          = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+# Women/unisex bot
+_TOKEN_WOMEN = os.getenv("TELEGRAM_TOKEN_WOMEN") or os.getenv("TELEGRAM_TOKEN", "")
+_IDS_WOMEN   = os.getenv("TELEGRAM_CHAT_ID_WOMEN") or os.getenv("TELEGRAM_CHAT_ID", "")
 
-# Pause between sends to avoid Telegram rate limits
+# Men's bot (falls back to women bot if not configured)
+_TOKEN_MEN   = os.getenv("TELEGRAM_TOKEN_MEN") or _TOKEN_WOMEN
+_IDS_MEN     = os.getenv("TELEGRAM_CHAT_ID_MEN") or _IDS_WOMEN
+
 SEND_DELAY = 2.0
+
+
+def _chat_ids(raw: str) -> list[str]:
+    return [i.strip() for i in raw.split(",") if i.strip()]
+
+
+def _bot_for(gender: str) -> tuple[str, list[str]]:
+    if gender == "men":
+        return _TOKEN_MEN, _chat_ids(_IDS_MEN)
+    return _TOKEN_WOMEN, _chat_ids(_IDS_WOMEN)
 
 
 def _escape(text: str) -> str:
@@ -26,30 +38,49 @@ def _escape(text: str) -> str:
 
 
 def _build_caption(product: dict) -> str:
-    brand    = _escape(str(product.get("brand", "—")))
-    name     = _escape(str(product.get("name", "—")))
-    price    = product.get("price", 0)
-    original = product.get("original", 0)
-    discount = product.get("discount", 0)
-    sizes    = ", ".join(product.get("sizes", [])) or "—"
-    href     = product.get("href", "")
+    notify_type = product.get("notify_type", "new")
+    brand       = _escape(str(product.get("brand", "—")))
+    name        = _escape(str(product.get("name", "—")))
+    price       = product.get("price", 0)
+    original    = product.get("original", 0)
+    discount    = product.get("discount", 0)
+    href        = product.get("href", "")
+
+    if notify_type == "restock":
+        new_sizes = ", ".join(product.get("new_sizes", [])) or "—"
+        all_sizes = ", ".join(product.get("sizes", [])) or "—"
+        header = "🔄 <b>З'явились нові розміри!</b>"
+        sizes_line = f"Нові розміри: <b>{new_sizes}</b>\nВсі розміри: {all_sizes}"
+    else:
+        all_sizes = ", ".join(product.get("sizes", [])) or "—"
+        header = "🆕 <b>Новий товар!</b>"
+        sizes_line = f"Розміри: {all_sizes}"
 
     orig_str = f" <s>{original:.2f} €</s>" if original > 0 else ""
     return (
+        f"{header}\n"
         f"<b>{brand}</b> — {name}\n"
         f"Ціна: <b>{price:.2f} €</b>{orig_str}\n"
         f"Знижка: <b>{discount}%</b>\n"
-        f"Розміри: {sizes}\n"
+        f"{sizes_line}\n"
         f'<a href="{href}">Відкрити товар</a>'
     )
 
 
-async def _send_to_one(client: httpx.AsyncClient, chat_id: str, caption: str, image_bytes: Optional[bytes]):
+async def _send_to_one(
+    client: httpx.AsyncClient,
+    token: str,
+    chat_id: str,
+    caption: str,
+    image_bytes: Optional[bytes],
+):
+    api = f"https://api.telegram.org/bot{token}"
     sent = False
+
     if image_bytes:
         try:
             resp = await client.post(
-                f"{API_BASE}/sendPhoto",
+                f"{api}/sendPhoto",
                 data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
                 files={"photo": ("photo.jpg", image_bytes, "image/jpeg")},
             )
@@ -62,7 +93,7 @@ async def _send_to_one(client: httpx.AsyncClient, chat_id: str, caption: str, im
 
     if not sent:
         resp = await client.post(
-            f"{API_BASE}/sendMessage",
+            f"{api}/sendMessage",
             data={"chat_id": chat_id, "text": caption, "parse_mode": "HTML"},
         )
         if resp.status_code != 200:
@@ -70,8 +101,11 @@ async def _send_to_one(client: httpx.AsyncClient, chat_id: str, caption: str, im
 
 
 async def send_product(product: dict):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_IDS:
-        log.warning("TELEGRAM_TOKEN або TELEGRAM_CHAT_ID не задані — пропускаю.")
+    gender = product.get("gender", "women")
+    token, chat_ids = _bot_for(gender)
+
+    if not token or not chat_ids:
+        log.warning(f"Telegram не налаштований для gender={gender} — пропускаю.")
         return
 
     caption     = _build_caption(product)
@@ -90,22 +124,32 @@ async def send_product(product: dict):
             except Exception as e:
                 log.warning(f"Не вдалось завантажити фото: {e}")
 
-        for chat_id in TELEGRAM_CHAT_IDS:
-            await _send_to_one(client, chat_id, caption, image_bytes)
+        for chat_id in chat_ids:
+            await _send_to_one(client, token, chat_id, caption, image_bytes)
             await asyncio.sleep(0.5)
 
-    log.info(f"Надіслано: {product.get('brand')} — {product.get('name')} — {product.get('price')}€")
+    notify_type = product.get("notify_type", "new")
+    log.info(f"[{notify_type}] {product.get('brand')} — {product.get('name')} — {product.get('price')}€ → {gender}")
     await asyncio.sleep(SEND_DELAY)
 
 
 async def send_alert(text: str):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_IDS:
+    # Send admin alerts to all configured chats
+    tokens_ids = set()
+    if _TOKEN_WOMEN and _IDS_WOMEN:
+        for cid in _chat_ids(_IDS_WOMEN):
+            tokens_ids.add((_TOKEN_WOMEN, cid))
+    if _TOKEN_MEN and _IDS_MEN and _TOKEN_MEN != _TOKEN_WOMEN:
+        for cid in _chat_ids(_IDS_MEN):
+            tokens_ids.add((_TOKEN_MEN, cid))
+
+    if not tokens_ids:
         return
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            for chat_id in TELEGRAM_CHAT_IDS:
+            for token, chat_id in tokens_ids:
                 await client.post(
-                    f"{API_BASE}/sendMessage",
+                    f"https://api.telegram.org/bot{token}/sendMessage",
                     data={"chat_id": chat_id, "text": text},
                 )
     except Exception:
