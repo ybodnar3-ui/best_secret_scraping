@@ -50,13 +50,18 @@ async def _get_sizes(page: Page, product_url: str) -> list[str]:
 
         sizes = await page.evaluate("""
             () => {
+                const normalize = s => s.replace(',', '.').replace(/\\s+/g, ' ').trim();
+                const seen = new Set();
                 const result = [];
                 document.querySelectorAll('[role="option"]').forEach(el => {
                     const raw = el.innerText?.trim() || '';
-                    const size = raw.split('\\n')[0].trim();
-                    if (size && size.length <= 12) result.push(size);
+                    const size = normalize(raw.split('\\n')[0]);
+                    if (size && size.length <= 12 && !seen.has(size)) {
+                        seen.add(size);
+                        result.push(size);
+                    }
                 });
-                return [...new Set(result)];
+                return result;
             }
         """)
 

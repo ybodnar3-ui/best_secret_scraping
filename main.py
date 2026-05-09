@@ -36,6 +36,21 @@ signal.signal(signal.SIGTERM, _handle_signal)
 signal.signal(signal.SIGINT, _handle_signal)
 
 
+def _normalize_size(s: str) -> str:
+    return s.replace(",", ".").strip().upper()
+
+
+def _normalize_sizes(sizes: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for s in sizes:
+        n = _normalize_size(s)
+        if n and n not in seen:
+            seen.add(n)
+            result.append(n)
+    return result
+
+
 def _gender_from_url(url: str) -> str:
     url_lower = url.lower()
     if "women" in url_lower:
@@ -106,7 +121,8 @@ async def run_once():
                         log.error(f"Помилка при отриманні розмірів {pid}: {e}")
                         enriched = product
 
-                    current_sizes = enriched.get("sizes", [])
+                    current_sizes = _normalize_sizes(enriched.get("sizes", []))
+                    enriched["sizes"] = current_sizes
                     seen = get_seen(pid)
 
                     if seen is None:
@@ -117,10 +133,9 @@ async def run_once():
                             log.info(f"🆕 {enriched.get('brand')} — {enriched.get('name')} ({gender})")
                         except Exception as e:
                             log.error(f"Помилка відправки нового товару {pid}: {e}")
-                        # Mark seen regardless — better to miss a send than loop forever
                         upsert_seen(pid, current_sizes, gender)
                     else:
-                        stored_sizes = set(seen.get("sizes", []))
+                        stored_sizes = set(_normalize_size(s) for s in seen.get("sizes", []))
                         new_sizes = [s for s in current_sizes if s not in stored_sizes]
                         upsert_seen(pid, current_sizes, gender)
 
