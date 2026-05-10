@@ -92,7 +92,16 @@ _EXTRACT_JS = """
             const brand = card.querySelector('.designer')?.innerText?.trim() || '';
             const name  = card.querySelector('.name')?.innerText?.trim() || '';
             if (!brand || !name) return;
-            const image = card.querySelector('.image-switcher--main-image')?.src || '';
+            const imgEl = card.querySelector('.image-switcher--main-image');
+            let image = '';
+            if (imgEl) {
+                const rawAttr = imgEl.getAttribute('src') || '';
+                if (rawAttr && !rawAttr.startsWith('data:') && rawAttr.length > 10) {
+                    image = imgEl.src; // absolute URL from property
+                } else {
+                    image = imgEl.getAttribute('data-src') || imgEl.getAttribute('data-lazy') || imgEl.getAttribute('data-original') || '';
+                }
+            }
             const toFloat = t => parseFloat(
                 (t || '').replace(/[^\\d,]/g, '').replace(',', '.')
             ) || 0;

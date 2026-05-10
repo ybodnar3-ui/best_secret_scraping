@@ -78,3 +78,8 @@ def upsert_seen(product_id: str, sizes: list[str], gender: str):
 
 def is_seen(product_id: str) -> bool:
     return get_seen(product_id) is not None
+
+
+def get_total_count() -> int:
+    with _conn() as con:
+        return con.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
