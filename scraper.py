@@ -1,4 +1,5 @@
 import asyncio
+import random
 from playwright.async_api import Page
 from logger import get_logger
 
@@ -19,8 +20,9 @@ async def _scroll_to_bottom(page: Page):
     stable_rounds = 0
     for i in range(80):
         try:
-            await page.evaluate("window.scrollBy(0, 900)")
-            await asyncio.sleep(1.2)
+            scroll_px = random.randint(700, 1100)
+            await page.evaluate(f"window.scrollBy(0, {scroll_px})")
+            await asyncio.sleep(random.uniform(0.9, 1.8))
             count = await page.evaluate(
                 "document.querySelectorAll('.product-tile__container').length"
             )

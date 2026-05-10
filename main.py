@@ -94,6 +94,9 @@ async def run_once():
                 gender = _gender_from_url(url)
                 log.info(f"Перевіряю ({gender}): {url}")
 
+                pause = random.uniform(3, 8)
+                await asyncio.sleep(pause)
+
                 products = await get_products(page, url)
                 log.info(f"Знайдено: {len(products)} товарів")
 
