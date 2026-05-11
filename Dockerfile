@@ -9,8 +9,4 @@ COPY . .
 
 RUN mkdir -p state logs
 
-# Declare /app/state as a volume mount point.
-# On Railway: create a Volume in the dashboard and mount it at /app/state.
-VOLUME ["/app/state"]
-
 CMD ["python", "main.py"]
