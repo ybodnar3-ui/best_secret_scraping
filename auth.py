@@ -39,7 +39,18 @@ async def _do_login(page: Page) -> bool:
     await page.goto(ENTRANCE_URL, wait_until="domcontentloaded", timeout=30000)
     await asyncio.sleep(2)
 
-    await page.click('#login-button')
+    # Remove cookie overlay via JS (blocks pointer events on server)
+    await page.evaluate("""
+        () => {
+            document.querySelectorAll(
+                '.cmp-overlay, .cmp, [id*="cmp"], [class*="cookie"], [class*="consent"]'
+            ).forEach(el => el.remove());
+        }
+    """)
+    await asyncio.sleep(0.5)
+
+    # Click login button via JS to bypass any remaining overlays
+    await page.evaluate("document.querySelector('#login-button')?.click()")
     await page.wait_for_url("**/login.bestsecret.com/**", timeout=15000)
     await asyncio.sleep(1)
 
