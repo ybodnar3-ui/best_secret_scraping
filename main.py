@@ -105,8 +105,11 @@ async def _process_url(page, url: str, send: bool,
 
         if not matches(product):
             counters["skipped"] += 1
-            if get_seen(pid) is None:
-                upsert_seen(pid, [], gender)
+            try:
+                if get_seen(pid) is None:
+                    upsert_seen(pid, [], gender)
+            except Exception as e:
+                log.warning(f"DB write failed for skipped {pid}: {e}")
             continue
 
         try:
@@ -117,10 +120,19 @@ async def _process_url(page, url: str, send: bool,
 
         current_sizes = _normalize_sizes(enriched.get("sizes", []))
         enriched["sizes"] = current_sizes
-        seen = get_seen(pid)
+
+        try:
+            seen = get_seen(pid)
+        except Exception as e:
+            log.error(f"DB read failed for {pid}: {e}")
+            continue
 
         if seen is None:
-            upsert_seen(pid, current_sizes, gender)
+            try:
+                upsert_seen(pid, current_sizes, gender)
+            except Exception as e:
+                log.error(f"DB write failed for new {pid}: {e}")
+                continue
             if not send or pid in sent_this_run:
                 continue
             enriched["notify_type"] = "new"
@@ -134,11 +146,14 @@ async def _process_url(page, url: str, send: bool,
         else:
             stored_sizes = set(_normalize_size(s) for s in seen.get("sizes", []))
             new_sizes = [s for s in current_sizes if s not in stored_sizes]
-            # Merge: never remove previously-seen sizes from the stored set.
-            # Sizes can disappear from the page (sold out) and reappear —
-            # using union prevents treating them as "new" again.
+            # Union: never drop previously-seen sizes. A size that sells out
+            # and comes back must NOT re-trigger a notification.
             merged_sizes = list(stored_sizes | set(current_sizes))
-            upsert_seen(pid, merged_sizes, gender)
+            try:
+                upsert_seen(pid, merged_sizes, gender)
+            except Exception as e:
+                log.error(f"DB write failed for restock {pid}: {e}")
+                continue
 
             if new_sizes and send and pid not in sent_this_run:
                 enriched["notify_type"] = "restock"
