@@ -39,33 +39,52 @@ async def _scroll_to_bottom(page: Page):
             break
 
 
+_SIZE_JS = """
+    () => {
+        const normalize = s => s.replace(',', '.').replace(/\\s+/g, ' ').trim();
+        const seen = new Set();
+        const result = [];
+        document.querySelectorAll('[role="option"]').forEach(el => {
+            const raw = el.innerText?.trim() || '';
+            const size = normalize(raw.split('\\n')[0]);
+            if (size && size.length <= 12 && !seen.has(size)) {
+                seen.add(size);
+                result.push(size);
+            }
+        });
+        return result;
+    }
+"""
+
+
 async def _get_sizes(page: Page, product_url: str) -> list[str]:
     try:
-        await page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
-
+        # networkidle waits for JS to fully settle — more reliable than domcontentloaded
         try:
-            await page.click('.size-selector-button', timeout=4000)
-            await asyncio.sleep(1.5)
-        except Exception as e:
-            log.debug(f"Size selector не знайдено або не вдалось клікнути ({product_url[-40:]}): {e}")
+            await page.goto(product_url, wait_until="networkidle", timeout=45000)
+        except Exception:
+            await page.goto(product_url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
 
-        sizes = await page.evaluate("""
-            () => {
-                const normalize = s => s.replace(',', '.').replace(/\\s+/g, ' ').trim();
-                const seen = new Set();
-                const result = [];
-                document.querySelectorAll('[role="option"]').forEach(el => {
-                    const raw = el.innerText?.trim() || '';
-                    const size = normalize(raw.split('\\n')[0]);
-                    if (size && size.length <= 12 && !seen.has(size)) {
-                        seen.add(size);
-                        result.push(size);
-                    }
-                });
-                return result;
-            }
-        """)
+        # Open size selector
+        try:
+            await page.click('.size-selector-button', timeout=5000)
+        except Exception as e:
+            log.debug(f"Size selector click failed ({product_url[-40:]}): {e}")
+
+        # Wait for option elements to actually appear in the DOM
+        try:
+            await page.wait_for_selector('[role="option"]', timeout=6000)
+        except Exception:
+            await asyncio.sleep(2)
+
+        # Read sizes — retry once if first attempt returns fewer results
+        sizes = await page.evaluate(_SIZE_JS)
+        if len(sizes) < 2:
+            await asyncio.sleep(2)
+            sizes2 = await page.evaluate(_SIZE_JS)
+            if len(sizes2) > len(sizes):
+                sizes = sizes2
 
         if not sizes:
             log.debug(f"Розміри не знайдені для {product_url[-40:]}")

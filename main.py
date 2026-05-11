@@ -146,11 +146,10 @@ async def _process_url(page, url: str, send: bool,
         else:
             stored_sizes = set(_normalize_size(s) for s in seen.get("sizes", []))
             new_sizes = [s for s in current_sizes if s not in stored_sizes]
-            # Union: never drop previously-seen sizes. A size that sells out
-            # and comes back must NOT re-trigger a notification.
-            merged_sizes = list(stored_sizes | set(current_sizes))
+            # Overwrite with current: allows restock detection (size sold out
+            # then came back = genuinely new notification).
             try:
-                upsert_seen(pid, merged_sizes, gender)
+                upsert_seen(pid, current_sizes, gender)
             except Exception as e:
                 log.error(f"DB write failed for restock {pid}: {e}")
                 continue
